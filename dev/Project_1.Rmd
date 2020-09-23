@@ -1,0 +1,456 @@
+---
+title: "project1"
+author: "Yunuo Ma"
+date: "9/21/2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+# 1. Introduction
+The *American National Election Studies* (ANES) are surveys of voters in the U.S. on the national scale. For each predidential election since 1948, ANES collects responses from respondents both before and after the election. The goal of ANES is to understand political behaviors using systematic surveys. ANES's data and results have been routinely used by news outlets, election campaigns and political researchers.
+
+The *Time Series Cumulative Data* of ANES include answers, from respondents from different years, on selected questions that have been asked in three or more ANES' *Time Series* studies. Tremendous amount of efforts have been put into data consolidation as variables are often named differently in different years. 
+
+A rule of thumb for analyzing any data set is to understand its study design and data collection process first. You are strongly encouraged to read the *codebooks*. 
+
+# 2. Data processing for this R Notebook.
+
+### Step 3.1 Checking `R` packages for data processing
+
+From the packages' descriptions:
+
++ `tidyverse` is an opinionated collection of R packages designed for data science. All packages share an underlying design philosophy, grammar, and data structures;
++ `haven` enables `R` to read and write various data formats used by other statistical packages. `haven` is part of the `tidyverse`.
++ `devtools` provides a collection of package development tools.
++ `RColorBrewer` provides ready-to-use color palettes.
++ `DT` provides an R interface to the JavaScript library DataTables;
++ `ggplot2` a collection of functions for creating graphics, based on The Grammar of Graphics.
+
+```{r load libraries, warning=FALSE, message=FALSE, include=FALSE}
+packages.used=as.list(
+  c(
+  "tidyverse",
+  "haven",
+  "devtools",
+  "RColorBrewer",
+  "data.table",
+  "ggplot2",
+  "gridExtra",
+  "data.table",
+  "boot",
+  "car",
+  "ResourceSelection",
+  "DescTools",
+  "lsr",
+  "rcompanion",
+  "usmap",
+  "BMA",
+  "effects")
+)
+check.pkg = function(x){
+  if(!require(x, character.only=T)) install.packages(x, 
+                                                     character.only=T,
+                                                     dependence=T)
+}
+lapply(packages.used, check.pkg)
+```
+
+### Step 3.2 Import raw ANES data
+
+Working with the DTA format of the raw ANES data, downloaded from [this page](https://electionstudies.org/data-center/anes-time-series-cumulative-data-file/).
+
+```{r read in data, message = F}
+anes_dat <- read_dta("../data/anes_timeseries_cdf.dta")
+dim(anes_dat) 
+```
+
+This data contains 59944 rows with 1029 columns. 
+
+```{r NAs}
+anes_NAs=anes_dat%>%
+  summarise_all(list(na.mean=function(x){
+                              mean(is.na(x))}))
+anes_NAs=data.frame(nas=unlist(t(anes_NAs)))
+ggplot(anes_NAs, aes(x=nas)) + 
+  geom_histogram(color="black", 
+                 fill="white",
+                 binwidth=0.05)+
+  labs(title="Fractions of missing values")
+```
+
+```{r year barplot}
+barplot(table(anes_dat$VCF0004),
+        las=2,
+        main="number of respondents over the years")
+```
+
+Some variables are asked nearly all the years and some are asked only a few years. 
+
+### Step 3.3 Process variables for analysis
+Some variables were selected based on their description in the ANES codebook.
+
+```{r labelled variables subset}
+Election_years=as.character(seq(1952, 2016, 4))
+
+anes = anes_dat %>%
+  mutate(year = as_factor(VCF0004), #0 NA
+    turnout = as_factor(VCF0703), #4903 NA
+    #vote = as_factor(VCF0706), #4896 NA
+    region = as_factor(VCF0112), #0 NA
+    income = as_factor(VCF0114),#2517 NA
+    work = as_factor(VCF0151), #13162 NA
+    education = as_factor(VCF0110), #398 NA
+    race = as_factor(VCF0105a), #287 NA
+    religion = as_factor(VCF0128), #333 NA
+    gender = as_factor(VCF0104), #141 NA
+    # PARTISANSHIP VARIABLE
+    partisanship_strength = as_factor(VCF0305), #1169 NA
+    intended_actual_votes = as_factor(VCF0734), #2472 NA
+    care_party_win = as_factor(VCF0311), #26115 NA #missing 2016
+    # INFLUENCE VARIABLE
+    try_influence = as_factor(VCF0717),#6373 NA
+    days_discuss = VCF0733, #33342 NA
+    #COSIDERED ELECTION RESULT
+    considered_result = as_factor(VCF0700), #27600 NA #missing 2012
+    # INTERESTED
+    interest = as_factor(VCF0310)
+    )%>% 
+    
+  select(year, turnout, region, income, 
+         work, education, race, religion, gender,
+         partisanship_strength, intended_actual_votes,
+         care_party_win, try_influence,
+         days_discuss,considered_result,
+         interest) %>%
+  filter(year %in% Election_years)%>%
+  replace_na(list(days_discuss = mean(na.omit(anes_dat$VCF0733))))%>%
+  na.omit()
+
+#change region factor levels
+anes$region = as.factor(as.character(anes$region))
+levels(anes$region) <- c("Northeast","North Central","West","South")
+
+#deleted rows with ambiguous meaning of intended_actual_votes variable
+l=levels(anes$intended_actual_votes)
+index <- c(which(anes$intended_actual_votes == l[5]),
+           which(anes$intended_actual_votes == l[6]),
+           which(anes$intended_actual_votes == l[7]))
+anes = anes[-index,]
+
+#add intend and actual variables corresponding to
+#intended party to vote and actual party to vote
+anes = anes %>% 
+  mutate(intend = substring(as.character(intended_actual_votes), 13,22),
+         actual = substring(as.character(intended_actual_votes), 31,40)) 
+anes$intend = gsub("undecided:","others",anes$intend)
+anes$actual = gsub("emocratic;","Democratic",anes$actual)
+anes$actual = gsub("epublican;","Republican",anes$actual)
+anes = anes %>% mutate(intend = as_factor(intend),
+                       actual = as_factor(actual))
+
+
+# classified considered_result
+anes$considered_result = as.character(anes$considered_result)
+anes$considered_result = str_sub(anes$considered_result,4,13)
+anes$considered_result = gsub("DK; depend","others",anes$considered_result)
+anes$considered_result = gsub("Other cand","others",anes$considered_result)
+anes$considered_result = as.factor(anes$considered_result)
+
+# changed votes or not
+anes$changed_votes = ifelse(as.character(anes$intended_actual_votes) ==
+"1. INTENDED Democratic: voted Democratic" |anes$intended_actual_votes == 
+  "9. INTENDED Republican: voted Republican" , 0,1)
+
+# whether care party wins or not
+anes$care_party_win = ifelse(as.character(anes$care_party_win) ==
+"1. Don't care very much or DK, pro-con, depends, and", 0,1)
+
+# drop redundant levels
+anes$year = as_factor(as.character(anes$year))
+anes$turnout = as_factor(as.character(anes$turnout))
+anes$region = as_factor(as.character(anes$region))
+anes$income = as_factor(as.character(anes$income))
+anes$work = as_factor(as.character(anes$work))
+anes$education = as_factor(as.character(anes$education))
+anes$race = as_factor(as.character(anes$race))
+anes$religion = as_factor(as.character(anes$religion))
+anes$gender = as_factor(as.character(anes$gender))
+anes$partisanship_strength = as_factor(as.character(anes$partisanship_strength))
+anes$care_party_win = as_factor(as.character(anes$care_party_win))
+anes$try_influence = as_factor(as.character(anes$try_influence))
+anes$interest = as_factor(as.character(anes$interest))
+
+save(anes, file="../output/data_use.RData")
+```
+
+10 variables represent basic information about election and demographic characteristics are included: year, turnout, region, income, work, education, race, religion, gender variables. Then I chose other 7 variables that indicates partisanship (partisanship_strength), reported pre vote intention/reported post vote for president (intended_actual_votes), whether respondent care a good deal of which party wins presidential election (care_party_win) and implies expression of political opinions(try_influence: respondent try to influence the vote of others during the campaign, days_discuss: how many days in the past week did respondent talk about politics with family or friend) to some extent together with respondents' opinions of which party will win eventually for president election (considered_result) and interest variable demonstrate the degree respondents pay attention to political campaigns in elections (interest). 
+
+First I replaced NAs in days_discuss variable with the mean value of rest of valid data, and removed all the rows contain with NA values. Then I deleted rows with ambiguous meaning of intended_actual_votes variable that could not help to decide whether there was a changed between intend vote and actual vote. Since intended_actual_votes combined intended votes and actual votes, I separated it and added two columns corresponding to each of them (intend, actual). In order to have a clear explaination, I futhur classified considered_result into three categories: Democratic, Republican, and others. I also added a new column named changed_votes that classfied several cases of intended versus actual votes into 2 cases: changed or remain the same. Finally, I dropped redundant factor levels after all these as last step of data processing and cleaning. There are 12989 rows with 19 columns with my data.
+
+<img src="../figs/survey data for election.png" width="100">
+
+Biases in our data:
+1. Selection bias: Bias that occurs because the actual probabilities with which units are sampled differ from the selection probabilities specified by the investigator.
+1) Failing to obtain responses from all the chosen sample.
+    From the chosen sample, some people did not participate in this survey, which causes non response issues. Some of the respondents who participate in the survey did not answer all of the questions that missing data related to response bias with partial responses. 
+2) Using a sample selection procedure that is unknown to investigators, depends on some characteristic associated with properties of interest. 
+    There might exist survey data quality issue that investigator might took convenience sample that are easier to select or most likely to respond, and these are often not representative of nonresponding units or harder-to-select units. 
+    
+2. Measurement Bias: when response has a tendency to differ from the true value in one direction. 
+- Obtaining accurate responses is challenging particularly in surveys of people
+1) People sometimes do not tell the truth
+    Among the variables in my data, respondent might lie about their actual income level and interest that the degree respondent pay attention to political campaigns in elections so that they might get psychological comfort or make theirselves look more successful/active.
+2) People forgot
+    For example, the days_discuss variable in my data is the survey result of asking "how many days in the past week did respondent talk about politics with family or friend". However, respondent might include some days with discussions that occured more than a week ago. 
+3) People do not always understand questions
+    For example, VCF9088 (not in my data) is asking "where would you place [the Democratic Presidential Candidate] on the scale" regarding to political views people might hold are arranged from extremely liberal to extremely conservative, providing with 7 answers that respondent could choose from. However, respondent might not have enough detailed knowledge about [the Democratic Presidential Candidate] to identify where is best position to put on liberal-conservative scale.
+4) People give different answers using different interviewing method
+    The ANES 2012 and 2016  Times Series Study included both face-to-face (in-person) interviews and Web interviews. (codebook app)
+5) Question wording varies
+    Question wording are keep changing over the years, some questions are not worded identically in successive surveys that incompleteness of same question asked in different years exists. For example care_party_win variable in my data, which was asking "whether respondent care a good deal of which party wins presidential election" and 2016 version of this question is not comparable. Even if a question is worded identically in successive surveys, it replacement in the survey instrument may be different with unknown effect. (codebook intro)
+6) The orders of questions asking each year differ
+    Questions are not necessarily coded the same way in this dataset as they are in the election study datasets from which they came, question order effects might exist. (codebook intro)
+    
+    
+# 4. Analysis
+## 4.1 Descriptive Statistics - Interesting Facts about my data
+
+```{r 'year analysis', fig.height=6, fig.width=8}
+barplot(table(as.character(anes$year)),
+        las=2,
+        main="Number of Respondents over the Years",col="#56B4E9")
+```
+
+As a result of election conditions and political circumstances varies each year, some survey questions keeps changing among all the years in original dataset based on their detailed description in the ANES codebook. Here, variable year is not integrated after data processing since some of questions were not asked or comparable in some specific years.
+
+```{r 'change of vote analysis', fig.height=5, fig.width=10}
+cv = anes%>%count(changed_votes,actual)
+agg_ord <- mutate(cv,
+                  changed_votes = reorder(changed_votes, -n, sum),
+                  actual = reorder(actual, -n, sum))
+p1 <- ggplot(agg_ord) + geom_col(aes(x = changed_votes, 
+                               y = n, fill = actual), 
+                           position = "dodge")
+
+p2 <- ggplot(data=anes, aes(x=factor(1), stat="bin", 
+                            fill=actual)) + 
+  geom_bar(position="fill")+
+ggtitle("Plot of Changes of Votes versus Actual Votes") + 
+  xlab("") + ylab("Change of Votes")+ 
+facet_grid(facets=. ~ changed_votes)+ 
+coord_polar(theta="y")+
+theme(plot.title = element_text(hjust = 0.5))
+grid.arrange(p1, p2, nrow = 1)
+```
+
+From the plot we could observe that there are more Republican respondents than Democratic respondents in my dataset, about half of respondents who did not change their intention voted for Republican and half of respondents who did not change their intention voted for Democratic. For those who change their intention, more than half of them changed from Democratic to Republican and less than half of them changed from Republican to Democratic. 
+
+```{r 'actual vote analysis', fig.height=12, fig.width=10}
+anes_actual_region_religion= anes %>%
+  group_by(region, religion)%>%
+  count(actual)%>%
+  group_by(region, religion)%>%
+  mutate(
+    prop=n/sum(n)
+  )
+ggplot(anes_actual_region_religion, 
+       aes(x=region, y=prop, fill=actual)) +
+  geom_bar(stat="identity", colour="black")+ 
+  scale_fill_manual(values=c(topo.colors(2)))+
+  facet_wrap(~religion, ncol=1) + 
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(title="Which party candidate did religious groups more intend to 
+       \n vote for in the election with different regions?")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Various information could be shown in this plot. For respondents from protestant religious group and actually voted for Democratic candidates, larger proportion of them located in West region and less proportion of them located in Northeast region; more respondents from protestant religious group actually voted for Republican candidates rather than Democratic candidates. Slightly more respondents from Catholic[Roman Catholic] religious group actually voted for Democratic candidates rather than Republican candidates; Catholic[Roman Catholic] religious respondents from West actually voted less for Democratic comparing to Catholic[Roman Catholic] religious respondents from other regions. Overwhelmingly more respondents from Jewish religious group actually voted for Democratic candidates rather than Republican candidates; Jewish religious respondents from South actually voted more for Democratic comparing to Jewish religious respondents from other regions; Among those respondents who belong to other or none of religious groups, larger portion of them actually voted for Democratic candidates rather than Republican candidates.
+
+```{r 'care party wins analysis', fig.height=12, fig.width=10}
+anes_cpw = anes %>% mutate(care_party_win = as_factor(anes$care_party_win))
+levels(anes_cpw$care_party_win) = c("No", "Yes")
+anes_care_race_gender= anes_cpw %>%
+  group_by(gender, race)%>%
+  count(care_party_win)%>%
+  group_by(gender, race)%>%
+  mutate(
+    prop=n/sum(n)
+  )
+ggplot(anes_care_race_gender, 
+       aes(x=gender, y=prop, fill=care_party_win)) +
+  geom_bar(stat="identity", colour="black")+ 
+  scale_fill_manual(values=c('orange','dark green'))+
+  facet_wrap(~race, ncol=1) + 
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(title="what race group respondents intend to care 
+       about which party candidate \n will win 
+       in election with different gender?")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Generally speaking, it is interesting that bigger portion of female respondents tends to care about which party wins presidental election and most portion of respondents from each group seems to not care about which party wins the presidental election. There is a large proportion gap regarding to whether respondents care about which party wins presidental election between the two genders for race non-white and non-black (1948-1964) group and tiny differences in proportion exists regarding to whether respondents care about which party wins presidental election between the two genders for White non-Hispanic (1948-2012) group.
+
+```{r 'considered vs. actual analysis', fig.height=12, fig.width=10}
+anes_cpw2 = anes %>% mutate(partisanship = as_factor(anes$partisanship_strength))
+names(anes_cpw2)
+anes_partisanship_actual_considered_result= anes_cpw2 %>%
+  group_by(considered_result, actual)%>%
+  count(partisanship)%>%
+  group_by(considered_result, actual)%>%
+  mutate(
+    prop=n/sum(n)
+  )
+ggplot(anes_partisanship_actual_considered_result, 
+       aes(x=considered_result, y=prop, fill=partisanship)) +
+  geom_bar(stat="identity", colour="black")+ 
+  scale_fill_manual(values=brewer.pal(4, "Accent"))+
+  facet_wrap(~actual, ncol=1) + 
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(title="Difference between actual votes among different 
+       considered vote results in November with various partisanship stength")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+For respodents who both actually voted for Republican and actually voted for Democratic, strong partisanship consists smallest proportion in others comparing to Democratic and Republican regarding to respondent's opinion about who will be elected president in November. For respondents who actually voted for Democratic, weak partisanship consists bigger proportion in Republican comparing to Democratic and Republican regarding to respondent's opinion about who will be elected president in November. However, for respondents who actually voted for Republic, weak partisanship did not consists bigger proportion in Democratic comparing to Others and Republican regarding to respondent's opinion about who will be elected president in November.
+
+## 4.2 It is quite interesting that some respondents intend to vote for a particular party but changed their mind eventually when they actually voted. What might be some significant factors behind this?
+
+```{r}
+set.seed(5243)
+n <- nrow(anes)
+index <- sample.int(n, n*0.8)
+anes_train <- anes[index,]
+anes_test <- anes[-index,]
+
+anes_2 = anes[,-c(2,11,17)]
+anes_2$days_discuss = as.numeric(as_factor(anes$days_discuss))
+anes_2$changed_votes = as.factor(anes$changed_votes)
+anes_train <- anes_2[index,]
+anes_test <- anes_2[-index,]
+
+anes_glm <- glm(as.factor(changed_votes) ~ .,family = binomial("logit"),data=anes_train)
+summary(anes_glm)
+#AIC
+step(anes_glm)
+
+#BIC
+output <- bic.glm(as.factor(changed_votes) ~ ., glm.family="binomial",data=anes_train, maxCol = 16)
+summary(output)
+```
+
+```{r,warning=FALSE, fig.height=18, fig.width=9}
+# Confusion Matrix and Model residual plots
+coef(anes_glm)
+summary(anes_glm)$coef
+glm_prob = predict(anes_glm,type="response",newdata=anes_test)
+glm_pred = rep("0",dim(anes_test)[1])
+glm_pred[glm_prob>0.5]="1"
+cm = table(glm_pred,anes_test$changed_votes)
+conf_mat = data.frame(matrix(c(2243, 17, 332, 16),ncol=2))
+colnames(conf_mat) = c("True 0","True 1")
+row.names(conf_mat) = c("Predicted 0", "Predicted 1")
+print(conf_mat)
+
+par(mfrow=c(4,5))
+library(car)
+residualPlots(anes_glm,plot = TRUE)
+```
+
+
+```{r}
+# Hosmer Lemeshow Goodness of Fit test
+hoslem.test(anes_glm$y, anes_glm$fitted)
+```
+
+```{r 'dignostic plots',fig.height=8, fig.width=8}
+glm.diag.plots(anes_glm)
+```
+
+```{r}
+mean(glm_pred==anes_test$changed_votes)
+```
+
+From the summary of logistic regression model we could observe that years 1968, 1976, 1984, American Indian or Alaska Native non-Hispanic race and partisanship, try_influence, considered_result others and not much interested about politics are relatively significant. After AIC model selection, it seems that 8 variables might have impacted changes of votes: gender, religion, interest, try_influence, year, considered_result, partisanship_strength and care_party_win. There are 28 coefficients related to our final model after AIC model selection including intercept. However, it seems that only 5 variables: year, partisanship_strength, care_party_win, try_influence, considered_result are significant with less variables and coefficient selected comparing to AIC for final model. 
+
+Since all variables in our model are categorical variables except days_discuss, boxplots for all categorical variable seems difficult to interpret because of the discreteness in the distribution of the residuals. For subplot of partisanship_strength, independent or apolitical seems to have a large IQR for Pearson Residuals than other levels of partisanship strength and respondents who do not care about which party wins presidential election seems to have a large IQR for Pearson Residuals than respondents who care about which party wins presidential election, respondent's opinion of which party's candidate will be elected president in November with others have large IQR for Pearson Residuals than Democratic and Republican groups. 
+
+From the result of Hosmer Lemeshow Goodness of Fit test, our p-value reported as 0.2712, which is relatively large, so we can conclude that our logistic regression model is not a poor fit. Although diagnostic plots looks not very clean as usual since almost every variables in our model are categorical variables and data includes many biases as I mentioned, relatively speaking, our model is somewhat still valid to some extent that the accuracy of our model is around 0.87 which also implies that our model performance is not bad. 
+
+```{r 'effect plot', fig.height=20, fig.width=20}
+plot(effect("year:partisanship_strength:care_party_win", 
+            anes_glm,multiline=TRUE, ylab="Probability(released)",
+            rug=FALSE),
+     xaxt = "n", yaxt = "n",cex.lab=1.5, cex.axis=1.5, cex.main=1.5, 
+     cex.sub=1.5,ylab="Probability(released)")
+```
+
+Here, we try to visualize if there is any interation significant factors in our model including year, partisanship_strength, and care_party_win in the effect plots. The general pattern of subplots are quite similar, with year 1976 has lowerest probability and year 1968 has highest probability. Among respondents who care about which party wins presidential election, independent or apolitical in terms of partisanship strength have a higher probability among other partisanship strength groups, however, the probability is not large. Among respondents who do not care about which party wins presidential election, independent or apolitical in terms of partisanship strength also have a higher probability among other partisanship strength groups, but the probability for respondents who do not care about which party wins presidential election seems have a higher probability for all partisanship strength levels than corresponding partisanship strength levels with respondents who care about which party wins presidential election. 
+
+## 4.3 For those who intend to have a stronger strength of partisanship in election, do they have propensity for trying to influence the vote of others during the campaign?
+
+```{r contingency table and Chi-squared test}
+# contingency table
+print(table(anes$partisanship_strength, anes$try_influence))
+# Chi-squared test
+chisq.test(anes$partisanship_strength, anes$try_influence) 
+```
+
+Here, we have a $\chi^2$ value of 191.1 for Chi-squared test. Since we get a p-value of less than the significance level of 0.05, we can reject the null hypothesis and conclude that the two variables partisanship_strength and try_influence are, indeed, independent. However, problem with Pearson’s $\chi^2$ coefficient is that the range of its maximum value depends on the sample size and the size of the contingency table. These values may vary in different situations. 
+
+```{r Contingency coefficient, Cramer’s V}
+library(DescTools)
+x1 = ContCoef(anes$partisanship_strength, anes$try_influence, correct = FALSE)
+#Corrected contingency coefficient
+x2 = ContCoef(anes$partisanship_strength, anes$try_influence, correct = TRUE) 
+
+library(lsr)
+x3 = cramersV(anes$partisanship_strength, anes$try_influence)
+
+library(rcompanion)
+x4 = cramerV(anes$partisanship_strength, anes$try_influence, bias.correct = TRUE)
+tbl = data.frame(matrix(c(x1,x2,x3,x4),ncol=2))
+colnames(tbl) = c('Contingency Coefficient','Cramer’s V')
+row.names(tbl) = c('Original','Corrected')
+print(tbl)
+```
+
+From above statistics we can see that the strength of association between the strength of partisanship from respondent's party identification and whether respondent try to influence the vote of others is very small. 
+
+```{r,warning=FALSE,fig.height=6, fig.width=6}
+df <- data.frame(
+  partisanship = as.character(anes$partisanship_strength),
+  influence = as.character(anes$try_influence),
+  care  = as.character(anes$care_party_win),
+  years = as.character(anes$year),
+  result = as.character(anes$considered_result)
+) 
+
+# function to get chi square p value and Cramers V
+f = function(x,y) {
+    tbl = df %>% select(x,y) %>% table()
+    cramV = round(cramersV(tbl), 4) 
+    data.frame(x, y, cramV) }
+
+# create unique combinations of column names
+# sorting will help getting a better plot (upper triangular)
+df_comb = data.frame(t(combn(sort(names(df)), 2)), stringsAsFactors = F)
+
+# apply function to each variable combination
+df_res = map2_df(as.character(df_comb$X1), as.character(df_comb$X2), f)
+
+# plot results
+df_res %>%
+  ggplot(aes(x,y,fill=cramV))+
+  geom_tile()+
+  geom_text(aes(x,y,label=cramV))+
+  scale_fill_gradient(low="yellow",high="red")+
+  theme_classic()
+```
+
+From the plot above with several significant factors from BIC result, we could observe that the year and whether respondent care which party wins presidential election have relatively stronger association but not strong enough in general, and respondent's opinion of which party's candidate will be elected president in November have relatively weak associations with both whether respondent care which party wins presidential election and if respondent try to influence the vote of others during the campaign. 
+
+
